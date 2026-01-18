@@ -1,28 +1,33 @@
 /**
  * Main User Interface - Voice Assistant for Elderly Users.
- * Clean, minimal design with large touch targets.
+ * Uses Web Speech API for fast browser-based speech recognition.
  */
 
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAudioRecorder } from '@/hooks/useAudioRecorder';
-import { voiceApi, TranscribeResponse, RespondResponse } from '@/services/api';
+import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
+import { voiceApi } from '@/services/api';
 import { useAppStore, fontSizeScales } from '@/lib/store';
 
-type AppState = 'idle' | 'recording' | 'processing' | 'confirming' | 'responding' | 'playing' | 'error';
+type AppState = 'idle' | 'recording' | 'processing' | 'playing' | 'error';
+
+interface PipelineResult {
+  user_text: string;
+  assistant_text: string;
+  audio_url: string;
+}
 
 export default function Home() {
   const router = useRouter();
   const { language, setLanguage, sessionId, setSessionId, addToHistory, isAuthenticated, user, logout, theme, toggleTheme, fontSize } = useAppStore();
   
   const [state, setState] = useState<AppState>('idle');
-  const [transcription, setTranscription] = useState<TranscribeResponse | null>(null);
-  const [response, setResponse] = useState<RespondResponse | null>(null);
+  const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [currentTime, setCurrentTime] = useState('');
 
-  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+  const { isListening, transcript, startListening, stopListening, isSupported } = useSpeechRecognition(language);
   const scale = fontSizeScales[fontSize];
 
   // Redirect to login if not authenticated
@@ -67,65 +72,61 @@ export default function Home() {
 
   // Handle microphone button click
   const handleMicClick = useCallback(async () => {
-    if (state === 'processing' || state === 'responding') return;
+    if (state === 'processing') return;
 
-    if (isRecording) {
+    if (isListening) {
+      // Stop recording and process
+      const finalText = stopListening();
+      
+      if (!finalText || finalText.trim().length === 0) {
+        setState('idle');
+        return;
+      }
+      
       setState('processing');
+      
       try {
-        const audioBlob = await stopRecording();
         const currentSessionId = await initSession();
         if (!currentSessionId) return;
 
-        const result = await voiceApi.uploadAudio(currentSessionId, audioBlob);
-        setTranscription(result);
-        setState('confirming');
-      } catch {
+        // Use text pipeline: LLM -> TTS (STT done in browser)
+        const result = await voiceApi.processText(currentSessionId, finalText, language);
+        
+        setPipelineResult({
+          user_text: result.user_text,
+          assistant_text: result.assistant_text,
+          audio_url: result.audio_url,
+        });
+        setState('playing');
+
+        addToHistory({
+          transcript: result.user_text,
+          response: result.assistant_text,
+          audioUrl: result.audio_url,
+          language,
+        });
+
+        // Play audio response
+        const audio = new Audio(`http://localhost:8000${result.audio_url}`);
+        audio.play().catch(console.error);
+        audio.onended = () => setState('idle');
+      } catch (error) {
+        console.error('Pipeline error:', error);
         setState('error');
       }
     } else {
+      // Start recording
       try {
-        await startRecording();
+        startListening();
         setState('recording');
       } catch {
         setState('error');
       }
     }
-  }, [state, isRecording, startRecording, stopRecording, initSession]);
-
-  // Confirm and get response
-  const handleConfirm = useCallback(async () => {
-    if (!sessionId || !transcription) return;
-    setState('responding');
-
-    try {
-      await voiceApi.confirmTranscript(sessionId, transcription.turn_id, true);
-      
-      const assistantText = language === 'ru'
-        ? `Я понял вас: "${transcription.normalized_transcript}". Чем могу помочь?`
-        : `Мен сізді түсіндім: "${transcription.normalized_transcript}". Қалай көмектесе аламын?`;
-
-      const result = await voiceApi.generateResponse(sessionId, transcription.turn_id, assistantText);
-      setResponse(result);
-      setState('playing');
-
-      addToHistory({
-        transcript: transcription.normalized_transcript,
-        response: result.assistant_text,
-        audioUrl: result.audio_url,
-        language,
-      });
-
-      const audio = new Audio(`http://localhost:8000${result.audio_url}`);
-      audio.play().catch(console.error);
-      audio.onended = () => setState('idle');
-    } catch {
-      setState('error');
-    }
-  }, [sessionId, transcription, language, addToHistory]);
+  }, [state, isListening, startListening, stopListening, initSession, language, addToHistory]);
 
   const handleReset = useCallback(() => {
-    setTranscription(null);
-    setResponse(null);
+    setPipelineResult(null);
     setState('idle');
   }, []);
 
@@ -215,35 +216,44 @@ export default function Home() {
             <div className="glass-panel px-6 py-2 rounded-full flex items-center gap-2 shadow-sm">
               <div className={`w-3 h-3 rounded-full ${
                 state === 'recording' ? 'bg-red-500 animate-pulse' :
-                state === 'processing' || state === 'responding' ? 'bg-yellow-500 animate-pulse' :
+                state === 'processing' ? 'bg-yellow-500 animate-pulse' :
                 state === 'error' ? 'bg-red-500' :
                 'bg-green-500 animate-pulse'
               }`} />
               <span className="text-gray-800 dark:text-white text-lg font-medium">
                 {state === 'idle' && (language === 'ru' ? 'Готов к работе' : 'Жұмысқа дайын')}
-                {state === 'recording' && (language === 'ru' ? 'Запись...' : 'Жазу...')}
-                {state === 'processing' && (language === 'ru' ? 'Обработка...' : 'Өңдеу...')}
-                {state === 'confirming' && (language === 'ru' ? 'Проверьте текст' : 'Мәтінді тексеріңіз')}
-                {state === 'responding' && (language === 'ru' ? 'Генерация ответа...' : 'Жауап жасау...')}
+                {state === 'recording' && (language === 'ru' ? 'Слушаю...' : 'Тыңдаймын...')}
+                {state === 'processing' && (language === 'ru' ? 'Думаю...' : 'Ойланамын...')}
                 {state === 'playing' && (language === 'ru' ? 'Воспроизведение' : 'Ойнату')}
                 {state === 'error' && (language === 'ru' ? 'Ошибка' : 'Қате')}
               </span>
             </div>
           </div>
 
+          {/* Browser STT not supported warning */}
+          {!isSupported && (
+            <div className="mb-6 glass-panel px-6 py-4 rounded-2xl border-2 border-yellow-300 dark:border-yellow-700">
+              <p className="text-yellow-700 dark:text-yellow-300 text-center">
+                {language === 'ru' 
+                  ? 'Ваш браузер не поддерживает распознавание речи. Используйте Chrome или Edge.'
+                  : 'Браузеріңіз сөйлеуді тану мүмкіндігін қолдамайды. Chrome немесе Edge пайдаланыңыз.'}
+              </p>
+            </div>
+          )}
+
           {/* Idle / Recording State - Main Button */}
           {(state === 'idle' || state === 'recording' || state === 'processing') && (
             <>
-              <div className="relative flex items-center justify-center group cursor-pointer mb-12">
+              <div className="relative flex items-center justify-center group cursor-pointer mb-8">
                 <div className={`absolute inset-0 rounded-full blur-2xl opacity-30 w-full h-full transform scale-125 transition-colors ${
                   state === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-green-500 animate-pulse'
                 }`} />
                 
                 <button
                   onClick={handleMicClick}
-                  disabled={state === 'processing'}
+                  disabled={state === 'processing' || !isSupported}
                   className={`relative w-48 h-48 md:w-64 md:h-64 rounded-full flex items-center justify-center transition-all duration-300 
-                    ${state === 'processing' ? 'opacity-50 cursor-wait' : 'hover:scale-[1.02] active:scale-[0.98]'}
+                    ${state === 'processing' || !isSupported ? 'opacity-50 cursor-wait' : 'hover:scale-[1.02] active:scale-[0.98]'}
                     bg-white/40 dark:bg-gray-800/40 backdrop-blur-xl border-4 shadow-xl
                     ${state === 'recording' ? 'border-red-300' : 'border-white/50 dark:border-gray-600/50 hover:border-green-300'}
                   `}
@@ -271,6 +281,20 @@ export default function Home() {
                 </button>
               </div>
 
+              {/* Live transcript display */}
+              {state === 'recording' && transcript && (
+                <div className="w-full max-w-2xl mb-8">
+                  <div className="glass-panel rounded-2xl p-6">
+                    <p className="text-gray-500 dark:text-gray-400 text-sm mb-2">
+                      {language === 'ru' ? 'Распознано:' : 'Танылды:'}
+                    </p>
+                    <p className="text-gray-800 dark:text-white text-xl font-medium">
+                      {transcript}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <h1 className="text-gray-800 dark:text-white text-3xl md:text-[40px] font-bold leading-tight text-center max-w-2xl mb-6 px-4">
                 {state === 'recording' 
                   ? (language === 'ru' ? 'Говорите...' : 'Сөйлеңіз...')
@@ -279,65 +303,27 @@ export default function Home() {
               </h1>
               <p className="text-gray-500 dark:text-gray-400 text-xl text-center max-w-lg mb-12">
                 {state === 'recording'
-                  ? (language === 'ru' ? 'Нажмите ещё раз, чтобы остановить' : 'Тоқтату үшін қайта басыңыз')
+                  ? (language === 'ru' ? 'Нажмите ещё раз, чтобы отправить' : 'Жіберу үшін қайта басыңыз')
                   : (language === 'ru' ? 'Нажмите на микрофон и говорите' : 'Микрофонды басып, сөйлеңіз')
                 }
               </p>
             </>
           )}
 
-          {/* Confirming State */}
-          {state === 'confirming' && transcription && (
-            <div className="w-full max-w-2xl">
-              <div className="glass-panel rounded-3xl p-8 mb-6">
-                <p className="text-gray-500 dark:text-gray-400 text-lg mb-2">
-                  {language === 'ru' ? 'Вы сказали:' : 'Сіз айттыңыз:'}
-                </p>
-                <p className="text-gray-800 dark:text-white text-2xl md:text-3xl font-semibold leading-relaxed">
-                  "{transcription.normalized_transcript}"
-                </p>
-              </div>
-
-              <p className="text-gray-600 dark:text-gray-300 text-xl text-center mb-6">
-                {language === 'ru' ? 'Всё правильно?' : 'Бәрі дұрыс па?'}
-              </p>
-
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  onClick={handleConfirm}
-                  className="glass-panel h-20 rounded-full flex items-center justify-center gap-3 text-white bg-green-500 hover:bg-green-600 transition-all text-xl font-bold shadow-lg"
-                >
-                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                  </svg>
-                  {language === 'ru' ? 'Да' : 'Иә'}
-                </button>
-                <button
-                  onClick={handleReset}
-                  className="glass-panel h-20 rounded-full flex items-center justify-center gap-3 text-gray-800 dark:text-white hover:bg-white/60 dark:hover:bg-gray-700/60 transition-all text-xl font-bold"
-                >
-                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  {language === 'ru' ? 'Повторить' : 'Қайталау'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Responding State */}
-          {state === 'responding' && (
-            <div className="flex flex-col items-center gap-6">
-              <div className="w-24 h-24 border-4 border-green-500 border-t-transparent rounded-full animate-spin" />
-              <p className="text-gray-800 dark:text-white text-2xl font-semibold">
-                {language === 'ru' ? 'Генерирую ответ...' : 'Жауап жасаудамын...'}
-              </p>
-            </div>
-          )}
-
           {/* Playing State */}
-          {state === 'playing' && response && (
+          {state === 'playing' && pipelineResult && (
             <div className="w-full max-w-2xl">
+              {/* User's question */}
+              <div className="glass-panel rounded-3xl p-6 mb-4">
+                <p className="text-gray-500 dark:text-gray-400 text-base mb-1">
+                  {language === 'ru' ? 'Вы спросили:' : 'Сіз сұрадыңыз:'}
+                </p>
+                <p className="text-gray-800 dark:text-white text-xl font-medium">
+                  "{pipelineResult.user_text}"
+                </p>
+              </div>
+
+              {/* Assistant's response */}
               <div className="glass-panel rounded-3xl p-8 mb-6">
                 <div className="flex items-center gap-3 text-green-600 mb-4">
                   <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
@@ -348,7 +334,7 @@ export default function Home() {
                   </span>
                 </div>
                 <p className="text-gray-800 dark:text-white text-2xl font-medium leading-relaxed">
-                  {response.assistant_text}
+                  {pipelineResult.assistant_text}
                 </p>
               </div>
 

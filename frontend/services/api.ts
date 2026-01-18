@@ -41,6 +41,17 @@ export interface RespondResponse {
   tts_latency_ms: number;
 }
 
+export interface FullPipelineResponse {
+  turn_id: string;
+  raw_transcript: string;
+  normalized_transcript: string;
+  confidence: number;
+  stt_latency_ms: number;
+  assistant_text: string;
+  audio_url: string;
+  tts_latency_ms: number;
+}
+
 export interface ConfirmResponse {
   success: boolean;
 }
@@ -90,6 +101,26 @@ export const voiceApi = {
 
   endSession: async (sessionId: string): Promise<void> => {
     await api.post(`/api/voice/end/${sessionId}`);
+  },
+
+  // Full pipeline: STT -> LLM -> TTS
+  processFullPipeline: async (sessionId: string, audioBlob: Blob): Promise<FullPipelineResponse> => {
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'recording.wav');
+    
+    const response = await api.post(`/api/voice/process/${sessionId}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  // Text pipeline: LLM -> TTS (using browser STT)
+  processText: async (sessionId: string, text: string, language: string = 'ru'): Promise<FullPipelineResponse> => {
+    const response = await api.post(`/api/voice/process-text/${sessionId}`, {
+      text,
+      language,
+    });
+    return response.data;
   },
 };
 

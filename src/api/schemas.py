@@ -102,6 +102,33 @@ class RespondResponse(BaseModel):
     tts_latency_ms: int
 
 
+class FullPipelineResponse(BaseModel):
+    """Full pipeline response (STT + LLM + TTS)."""
+    turn_id: uuid.UUID
+    raw_transcript: str
+    normalized_transcript: str
+    confidence: float
+    stt_latency_ms: int
+    assistant_text: str
+    audio_url: str
+    tts_latency_ms: int
+
+
+class TextProcessRequest(BaseModel):
+    """Process text request (browser STT -> LLM -> TTS)."""
+    text: str = Field(..., min_length=1)
+    language: Literal["ru", "kk"] = "ru"
+
+
+class TextProcessResponse(BaseModel):
+    """Text process response."""
+    turn_id: uuid.UUID
+    user_text: str
+    assistant_text: str
+    audio_url: str
+    tts_latency_ms: int
+
+
 # Admin schemas
 class ConversationFilter(BaseModel):
     """Conversation filter parameters."""

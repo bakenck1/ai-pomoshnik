@@ -385,3 +385,42 @@ class VoiceSessionService:
         result = await self.db.execute(query)
         turns = result.scalars().all()
         return len(turns) + 1
+
+    async def create_turn_from_text(
+        self,
+        session_id: str,
+        user_id: str,
+        text: str,
+    ) -> str:
+        """Create a turn from browser-transcribed text.
+        
+        Args:
+            session_id: Conversation/session ID
+            user_id: User ID
+            text: Transcribed text from browser
+            
+        Returns:
+            Turn ID
+        """
+        # Get conversation
+        query = select(Conversation).where(Conversation.id == str(session_id))
+        result = await self.db.execute(query)
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Create turn
+        turn_number = await self._get_next_turn_number(str(session_id))
+        turn = Turn(
+            id=str(uuid.uuid4()),
+            conversation_id=str(session_id),
+            turn_number=turn_number,
+            raw_transcript=text,
+            normalized_transcript=text,
+            transcript_confidence=1.0,  # Browser STT confidence
+            stt_latency_ms=0,  # Done in browser
+        )
+        self.db.add(turn)
+        await self.db.flush()
+
+        return turn.id

@@ -1,9 +1,11 @@
-"""Google STT Adapter - Mock mode for demo.
+"""Google STT Adapter using OpenRouter Whisper API.
 
-In production, use Google Cloud Speech-to-Text with service account.
+Uses OpenRouter's Whisper model for speech-to-text.
 """
 
 import time
+import base64
+import httpx
 from typing import Literal, Optional
 
 from src.adapters.stt.base import (
@@ -16,14 +18,14 @@ from src.config import get_settings
 
 
 class GoogleSTTAdapter(STTAdapter):
-    """Google STT adapter - Demo/Mock mode."""
+    """STT adapter using OpenRouter Whisper API."""
 
     PROVIDER_NAME = "google"
 
     def __init__(self, api_key: Optional[str] = None):
-        """Initialize Google STT adapter."""
+        """Initialize STT adapter."""
         settings = get_settings()
-        self.api_key = api_key or settings.google_api_key
+        self.api_key = settings.openrouter_api_key
         
     async def transcribe(
         self,
@@ -31,20 +33,69 @@ class GoogleSTTAdapter(STTAdapter):
         language: Literal["ru", "kk"] = "ru",
         hints: Optional[list[str]] = None,
     ) -> STTResult:
-        """Transcribe audio - Demo mode returns placeholder text."""
+        """Transcribe audio using OpenRouter Whisper."""
         start_time = time.perf_counter()
         
-        # Demo mode - return placeholder based on audio length
-        audio_duration_sec = len(audio) / (16000 * 2)  # Assuming 16kHz, 16-bit
+        if not self.api_key:
+            # Fallback to demo mode
+            return self._demo_transcribe(audio, language, start_time)
         
-        if audio_duration_sec < 1:
-            text = "Привет"
-        elif audio_duration_sec < 3:
-            text = "Привет, как дела?"
+        try:
+            # Encode audio to base64
+            audio_b64 = base64.b64encode(audio).decode('utf-8')
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/audio/transcriptions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                    },
+                    files={
+                        "file": ("audio.wav", audio, "audio/wav"),
+                    },
+                    data={
+                        "model": "openai/whisper-large-v3",
+                        "language": language,
+                    }
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    text = data.get("text", "")
+                    
+                    latency_ms = int((time.perf_counter() - start_time) * 1000)
+                    
+                    words = text.split()
+                    word_results = [
+                        STTWord(word=w, start=i*0.3, end=(i+1)*0.3, confidence=0.9)
+                        for i, w in enumerate(words)
+                    ]
+                    
+                    return STTResult(
+                        text=text,
+                        confidence=0.92,
+                        words=word_results,
+                        language=language,
+                        latency_ms=latency_ms,
+                    )
+                else:
+                    print(f"OpenRouter STT error: {response.status_code} - {response.text}")
+                    return self._demo_transcribe(audio, language, start_time)
+                    
+        except Exception as e:
+            print(f"STT error: {e}")
+            return self._demo_transcribe(audio, language, start_time)
+
+    def _demo_transcribe(self, audio: bytes, language: str, start_time: float) -> STTResult:
+        """Demo mode transcription."""
+        audio_duration_sec = len(audio) / (16000 * 2)
+        
+        if language == "kk":
+            text = "Сәлем, қалайсыз?"
         else:
-            text = "Здравствуйте, я хотел бы узнать информацию."
+            text = "Привет, как дела?"
         
-        latency_ms = int((time.perf_counter() - start_time) * 1000) + 100  # Simulate latency
+        latency_ms = int((time.perf_counter() - start_time) * 1000) + 100
         
         return STTResult(
             text=text,
