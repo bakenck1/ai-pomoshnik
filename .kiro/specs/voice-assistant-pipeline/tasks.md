@@ -1,0 +1,302 @@
+# Implementation Plan: Voice Assistant Pipeline
+
+## Overview
+
+Реализация Voice Assistant Pipeline на Python с использованием:
+- **Backend**: FastAPI + SQLAlchemy + PostgreSQL
+- **Frontend**: Next.js (React) для Senior UI и Admin Panel
+- **STT/TTS**: OpenAI API, Google Cloud Speech-to-Text/Text-to-Speech
+- **Storage**: S3-compatible (MinIO/AWS S3)
+- **Testing**: pytest + hypothesis (property-based testing)
+
+## Tasks
+
+- [x] 1. Настройка проекта и базовой инфраструктуры
+  - [x] 1.1 Создать структуру Python проекта с Poetry/pip
+    - Создать pyproject.toml с зависимостями: fastapi, sqlalchemy, asyncpg, pydantic, openai, google-cloud-speech, boto3
+    - Настроить структуру директорий: src/api, src/services, src/adapters, src/models, tests/
+    - _Requirements: 12.3_
+  - [x] 1.2 Настроить Docker Compose для локальной разработки
+    - PostgreSQL, Redis, MinIO контейнеры
+    - Конфигурация через .env файл
+    - _Requirements: 10.1_
+  - [x] 1.3 Создать SQLAlchemy модели и миграции (Alembic)
+    - Модели: User, Conversation, Turn, UnknownTerm, STTEvaluation, AuditLog
+    - Индексы согласно design.md
+    - _Requirements: 5.4, 7.1_
+
+- [x] 2. Реализация Adapter Layer для STT провайдеров
+  - [x] 2.1 Создать базовый интерфейс STTAdapter
+    - Abstract class с методом transcribe(audio, language, hints) -> STTResult
+    - Dataclass STTResult: text, confidence, words, language, latency_ms
+    - _Requirements: 12.1_
+  - [x] 2.2 Реализовать OpenAI STT Adapter
+    - Интеграция с OpenAI Whisper API
+    - Обработка ошибок и таймаутов
+    - _Requirements: 3.1, 12.1_
+  - [x] 2.3 Реализовать Google STT Adapter
+    - Интеграция с Google Cloud Speech-to-Text
+    - Поддержка языков ru-RU, kk-KZ
+    - _Requirements: 3.1, 12.1_
+  - [x] 2.4 Написать property test для Adapter Interface Compliance
+    - **Property 18: Adapter Interface Compliance**
+    - Проверить что оба адаптера возвращают корректную структуру STTResult
+    - **Validates: Requirements 12.1, 12.2**
+
+- [x] 3. Реализация Adapter Layer для TTS провайдеров
+  - [x] 3.1 Создать базовый интерфейс TTSAdapter
+    - Abstract class с методом synthesize(text, language, voice) -> TTSResult
+    - Dataclass TTSResult: audio, format, duration_ms, latency_ms
+    - _Requirements: 12.2_
+  - [x] 3.2 Реализовать OpenAI TTS Adapter
+    - Интеграция с OpenAI TTS API
+    - Поддержка голосов и скорости
+    - _Requirements: 3.2, 12.2_
+  - [x] 3.3 Реализовать Google TTS Adapter
+    - Интеграция с Google Cloud Text-to-Speech
+    - Поддержка языков ru-RU, kk-KZ
+    - _Requirements: 3.2, 12.2_
+
+- [x] 4. Checkpoint - Проверка адаптеров
+  - Убедиться что все тесты проходят
+  - Проверить интеграцию с реальными API провайдеров
+  - Спросить пользователя если есть вопросы
+
+- [x] 5. Реализация Normalization Service
+  - [x] 5.1 Создать NormalizationService с базовой логикой
+    - Метод normalize(text, language, stt_confidence) -> NormalizationResult
+    - Загрузка словаря из БД (approved terms)
+    - _Requirements: 4.1, 4.3_
+  - [x] 5.2 Реализовать exact match замены
+    - Поиск heard_variant в словаре
+    - Замена на correct_form
+    - Логирование всех замен
+    - _Requirements: 4.1_
+  - [x] 5.3 Реализовать fuzzy matching (Levenshtein)
+    - Активация при confidence < threshold (0.7)
+    - Расстояние Левенштейна ≤ 2
+    - _Requirements: 4.2_
+  - [x] 5.4 Реализовать создание pending unknown terms
+    - При низком confidence и отсутствии в словаре
+    - Сохранение контекста (соседние слова)
+    - _Requirements: 4.5_
+  - [x] 5.5 Написать property test для Dictionary Application
+    - **Property 2: Normalization Dictionary Application**
+    - Генерировать тексты с известными терминами, проверять замены
+    - **Validates: Requirements 4.1, 8.3**
+  - [x] 5.6 Написать property test для Transcript Preservation
+    - **Property 4: Transcript Preservation Invariant**
+    - Для любого текста raw и normalized сохраняются отдельно
+    - **Validates: Requirements 4.3, 5.2**
+
+- [x] 6. Реализация Voice Session Service
+  - [x] 6.1 Создать VoiceSessionService
+    - Методы: create_session, process_audio, confirm_transcript, generate_response, end_session
+    - Выбор адаптера по настройкам пользователя
+    - _Requirements: 3.4, 3.5, 11.1_
+  - [x] 6.2 Реализовать логику выбора провайдера
+    - Загрузка user.stt_provider и user.tts_provider
+    - Factory pattern для создания адаптеров
+    - _Requirements: 3.4, 3.5, 3.6_
+  - [x] 6.3 Реализовать сохранение аудио в Object Storage
+    - Генерация signed URLs
+    - Структура путей: /users/{user_id}/conversations/{conv_id}/turns/{turn_id}/
+    - _Requirements: 5.1, 10.2_
+  - [x] 6.4 Реализовать полный pipeline обработки
+    - Audio → STT → Normalize → (confirm) → LLM → TTS → Save
+    - Сохранение всех метрик в Turn
+    - _Requirements: 5.2, 5.3_
+  - [x] 6.5 Написать property test для Provider Selection
+    - **Property 1: Provider Selection Correctness**
+    - Для любого пользователя используется правильный адаптер
+    - **Validates: Requirements 3.4, 3.5, 3.6**
+  - [x] 6.6 Написать property test для Data Persistence
+    - **Property 7: Data Persistence Completeness**
+    - Для любого turn все данные сохранены
+    - **Validates: Requirements 5.1, 5.2, 5.3, 5.4**
+
+- [x] 7. Checkpoint - Проверка Voice Pipeline
+  - Убедиться что все тесты проходят
+  - Протестировать end-to-end flow с реальными провайдерами
+  - Спросить пользователя если есть вопросы
+
+- [x] 8. Реализация REST API endpoints
+  - [x] 8.1 Создать FastAPI приложение с роутерами
+    - Роутеры: /api/voice, /api/admin, /api/auth
+    - Middleware: CORS, logging, error handling
+    - _Requirements: 11.1_
+  - [x] 8.2 Реализовать Voice API endpoints
+    - POST /api/voice/session - создание сессии
+    - POST /api/voice/upload - загрузка аудио
+    - POST /api/voice/transcribe - распознавание
+    - POST /api/voice/respond - генерация ответа
+    - POST /api/voice/confirm - подтверждение/исправление
+    - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5_
+  - [x] 8.3 Реализовать Auth middleware (JWT)
+    - Валидация токенов
+    - Извлечение user_id и role
+    - _Requirements: 10.3, 10.6_
+  - [x] 8.4 Написать property test для API Contract
+    - **Property 17: API Response Contract**
+    - Для любого валидного запроса ответ соответствует схеме
+    - **Validates: Requirements 11.1, 11.3, 11.4, 11.5**
+  - [x] 8.5 Написать property test для Authorization
+    - **Property 13: Authorization Enforcement**
+    - Неавторизованные запросы получают 401/403
+    - **Validates: Requirements 10.3, 10.6**
+
+- [x] 9. Реализация Admin API
+  - [x] 9.1 Реализовать User management endpoints
+    - GET /api/admin/users - список пользователей
+    - PATCH /api/admin/users/:id - изменение провайдера
+    - _Requirements: 6.1, 6.2, 6.3_
+  - [x] 9.2 Реализовать Conversation endpoints
+    - GET /api/admin/conversations - список с фильтрами
+    - GET /api/admin/conversations/:id - детали диалога
+    - _Requirements: 7.1, 7.2, 7.3, 7.4_
+  - [x] 9.3 Реализовать Unknown Terms endpoints
+    - GET /api/admin/unknown-terms - список терминов
+    - POST /api/admin/unknown-terms - добавление
+    - PATCH /api/admin/unknown-terms/:id/approve - одобрение
+    - PATCH /api/admin/unknown-terms/:id/reject - отклонение
+    - _Requirements: 8.1, 8.3, 8.4, 8.5_
+  - [x] 9.4 Написать property test для Filter Correctness
+    - **Property 8: Conversation Filter Correctness**
+    - Результаты фильтрации соответствуют критериям
+    - **Validates: Requirements 7.1, 7.4**
+  - [x] 9.5 Написать property test для Term Approval Workflow
+    - **Property 9: Term Approval Workflow**
+    - Одобренные термины используются в нормализации
+    - **Validates: Requirements 8.3, 8.4**
+
+- [x] 10. Реализация Analytics Service
+  - [x] 10.1 Реализовать расчёт WER/CER
+    - Функция calculate_wer(hypothesis, reference)
+    - Функция calculate_cer(hypothesis, reference)
+    - _Requirements: 9.5_
+  - [x] 10.2 Реализовать агрегацию метрик по провайдерам
+    - Средний confidence, latency, correction_rate
+    - Группировка по периодам (день, неделя, месяц)
+    - _Requirements: 9.1, 9.3_
+  - [x] 10.3 Реализовать top-N unknown terms
+    - Сортировка по occurrence_count
+    - Фильтрация по провайдеру
+    - _Requirements: 9.2_
+  - [x] 10.4 Реализовать dual provider mode для тестовых пользователей
+    - Отправка аудио в оба провайдера
+    - Сохранение обоих результатов
+    - _Requirements: 9.4_
+  - [x] 10.5 Написать property test для WER/CER Calculation
+    - **Property 10: WER/CER Calculation Correctness**
+    - Проверить формулу на сгенерированных парах текстов
+    - **Validates: Requirements 9.5**
+  - [x] 10.6 Написать property test для Top-N Ordering
+    - **Property 11: Top-N Unknown Terms Ordering**
+    - Результаты отсортированы по count desc
+    - **Validates: Requirements 9.2**
+
+- [x] 11. Checkpoint - Проверка Backend
+  - Убедиться что все тесты проходят
+  - Проверить все API endpoints через Swagger UI
+  - Спросить пользователя если есть вопросы
+
+- [x] 12. Реализация Audit Log и Security
+  - [x] 12.1 Реализовать AuditLogService
+    - Логирование всех admin действий
+    - Сохранение: user_id, action, resource_type, resource_id, ip_address
+    - _Requirements: 10.4_
+  - [x] 12.2 Реализовать Signed URL генерацию
+    - Presigned URLs для S3/MinIO
+    - Настраиваемое время жизни
+    - _Requirements: 10.2_
+  - [x] 12.3 Реализовать Retention Policy worker
+    - Background task для удаления старых аудио
+    - Конфигурируемый период хранения
+    - _Requirements: 10.5_
+  - [x] 12.4 Написать property test для Audit Log Completeness
+    - **Property 15: Audit Log Completeness**
+    - Для любого admin действия создаётся запись
+    - **Validates: Requirements 10.4**
+  - [x] 12.5 Написать property test для Signed URLs
+    - **Property 14: Signed URL Generation**
+    - Все URL подписаны и имеют expiration
+    - **Validates: Requirements 10.2**
+
+- [x] 13. Реализация Senior UI (Frontend)
+  - [x] 13.1 Создать Next.js проект для frontend
+    - Настройка TypeScript, Tailwind CSS
+    - Структура: pages/, components/, hooks/, services/
+    - _Requirements: 1.1_
+  - [x] 13.2 Реализовать компонент записи голоса
+    - Большая кнопка "Говорить" (60-80% ширины)
+    - Push-to-talk режим
+    - MediaRecorder API
+    - _Requirements: 1.1, 1.2_
+  - [x] 13.3 Реализовать экран подтверждения
+    - "Вы сказали: [текст]" крупным шрифтом
+    - Кнопки: "Да, верно", "Исправить", "Повторить"
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
+  - [x] 13.4 Реализовать воспроизведение ответа
+    - Audio player для TTS ответа
+    - Отображение текста ответа крупным шрифтом
+    - _Requirements: 1.5_
+  - [x] 13.5 Реализовать форму исправления текста
+    - Текстовое поле для ввода правильного текста
+    - Отправка исправления на сервер
+    - _Requirements: 2.4, 2.6_
+
+- [x] 14. Реализация Admin Panel (Frontend)
+  - [x] 14.1 Создать layout и навигацию Admin Panel
+    - Sidebar: Users, Conversations, Unknown Terms, Analytics
+    - Auth guard для admin role
+    - _Requirements: 6.4_
+  - [x] 14.2 Реализовать страницу Users
+    - Таблица пользователей с фильтрами
+    - Редактирование провайдера
+    - _Requirements: 6.1, 6.2, 6.3_
+  - [x] 14.3 Реализовать страницу Conversations
+    - Список диалогов с фильтрами
+    - Детальный просмотр: аудио, транскрипты, метрики
+    - _Requirements: 7.1, 7.2, 7.3, 7.4_
+  - [x] 14.4 Реализовать страницу Unknown Terms
+    - Таблица терминов
+    - Кнопки Approve/Reject
+    - Форма добавления нового термина
+    - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
+  - [x] 14.5 Реализовать страницу Analytics
+    - Графики: confidence, latency по провайдерам
+    - WER/CER метрики
+    - Top unknown terms
+    - _Requirements: 9.1, 9.2, 9.3_
+
+- [x] 15. Checkpoint - Проверка Frontend
+  - Senior UI работает end-to-end
+  - Все страницы Admin Panel реализованы
+  - Все компоненты созданы
+
+- [x] 16. Интеграция и финальное тестирование
+  - [x] 16.1 Написать интеграционные тесты
+    - End-to-end voice flow
+    - Provider switching
+    - Admin workflows
+    - _Requirements: все_
+  - [x] 16.2 Настроить CI/CD pipeline
+    - GitHub Actions для тестов
+    - Docker build и push
+    - _Requirements: все_
+  - [x] 16.3 Создать документацию API (OpenAPI)
+    - Swagger UI для всех endpoints
+    - Примеры запросов/ответов
+    - _Requirements: 11.1-11.5_
+
+- [x] 17. Final Checkpoint
+  - Все 72 теста проходят
+  - Production ready
+
+## Notes
+
+- All tasks are required for comprehensive coverage
+- Each task references specific requirements for traceability
+- Checkpoints ensure incremental validation
+- Property tests validate universal correctness properties using hypothesis library
+- Unit tests validate specific examples and edge cases using pytest
